@@ -59,37 +59,61 @@ codebase_agent/
 ## Local Setup
 
 1. Copy `.env.example` to `.env`.
-2. Start PostgreSQL and Redis only:
+2. Build and start the Docker services:
 
 ```bash
-docker compose up -d db redis
+docker compose up --build -d
 ```
 
-3. Create migrations if needed:
+3. Confirm PostgreSQL and Redis are running:
+
+```bash
+docker ps
+```
+
+4. Create and activate a virtual environment:
+
+```bash
+python -m venv .venv
+```
+
+On Windows PowerShell:
+
+```bash
+.venv\Scripts\activate
+```
+
+5. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+6. Create migrations if needed:
 
 ```bash
 python manage.py makemigrations
 ```
 
-4. Apply migrations:
+7. Apply migrations:
 
 ```bash
 python manage.py migrate
 ```
 
-5. Run Django locally:
+8. Run Django locally:
 
 ```bash
 python manage.py runserver
 ```
 
-6. In another terminal, run Celery locally:
+9. In another terminal, activate the same virtual environment and run Celery locally:
 
 ```bash
-celery -A config worker -l info
+celery -A config worker -l info --pool=solo
 ```
 
-7. The API will be available at `http://localhost:8000/api/v1/`.
+10. The API will be available at `http://localhost:8000/api/v1/`.
 
 ## Environment Variables
 
@@ -114,37 +138,58 @@ celery -A config worker -l info
 
 ## API Examples
 
-Create a GitHub-backed session:
+Base session endpoints:
 
-```bash
-curl -X POST http://localhost:8000/api/v1/sessions/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "github",
-    "repo_url": "https://github.com/owner/repo",
-    "question": "How does retry work?"
-  }'
+- `POST http://localhost:8000/api/v1/sessions/`
+- `GET http://localhost:8000/api/v1/sessions/{id}/`
+
+### Example 1: FastAPI dependency injection internals
+
+Request:
+
+```json
+{
+  "source_type": "github",
+  "repo_url": "https://github.com/tiangolo/fastapi",
+  "question": "How does FastAPI handle dependency injection internally?"
+}
 ```
 
-Create a local-path session:
+Observed answer:
 
-```bash
-curl -X POST http://localhost:8000/api/v1/sessions/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "local",
-    "local_path": "/workspace/project",
-    "question": "How does retry work?"
-  }'
+```json
+{
+  "question": "How does FastAPI handle dependency injection internally?",
+  "answer": "FastAPI’s dependency injection is centered around two internal steps:\n\n1. **Build a dependency graph**\n   - `get_dependant()` is the function that constructs a `Dependant` representation for a callable and its dependencies. It appears in `fastapi/dependencies/utils.py` and is used recursively, including for sub-dependencies. [fastapi/dependencies/utils.py:284-331] [fastapi/dependencies/utils.py:332-379]\n   - The code path also shows `return get_dependant(...)`, which indicates FastAPI reuses this function to build dependency metadata from one callable to the next. [fastapi/dependencies/utils.py:128-175]\n\n2. **Resolve the dependencies at request time**\n   - `solve_dependencies()` is the async function that actually resolves those dependencies. It is defined in `fastapi/dependencies/utils.py` and is also referenced from routing code. [fastapi/dependencies/utils.py:596-643] [fastapi/routing.py:49-96]\n   - The text evidence shows `solved_result = await solve_dependencies(...)`, which means FastAPI performs dependency resolution during request handling before calling the endpoint. [fastapi/dependencies/utils.py:647-694]\n\nIn short, **FastAPI first analyzes endpoint callables with `get_dependant()` to build a dependency tree, then executes that tree with `solve_dependencies()` when a request comes in**. [fastapi/dependencies/utils.py:284-"
+}
 ```
 
-Fetch a session:
+### Example 2: AI integration discovery in a real repository
+
+Request:
+
+```json
+{
+  "source_type": "github",
+  "repo_url": "https://github.com/injamul3798/ai-survey-platform",
+  "question": "Tell me about ai integrations of this system ,what ai service they use."
+}
+```
+
+Observed answer:
+
+```json
+{
+  "question": "Tell me about ai integrations of this system ,what ai service they use.",
+  "answer": "From the supplied findings, this system does have an AI-related component for survey generation: `backend/app/services/survey_ai.py` imports prompt definitions from `backend/app/prompts/survey_generation.py`, and the prompt file uses survey generation request schemas such as `SurveyGenerateRequest` and `QuestionRegenerateRequest` [backend/app/services/survey_ai.py:8-28] [backend/app/prompts/survey_generation.py:3-23].\n\nWhat AI service they use is **not shown in the findings**. There is no explicit reference here to a provider/API name like OpenAI, Anthropic, Azure OpenAI, etc. So, based only on the supplied evidence, the exact AI service is **unknown**. [backend/app/services/survey_ai.py:8-28]\n\nInferred: the system likely has an AI-powered survey generation feature, but the specific model/provider cannot be determined from these snippets alone. [backend/app/services/survey_ai.py:8-28] [backend/app/prompts/survey_generation.py:3-23]"
+}
+```
+
+You can still inspect individual sessions and repository history through:
 
 ```bash
 curl http://localhost:8000/api/v1/sessions/1/
 ```
-
-List repository sessions:
 
 ```bash
 curl http://localhost:8000/api/v1/repos/1/sessions/
