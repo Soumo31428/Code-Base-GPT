@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Sequence
 
 from django.conf import settings
 
@@ -30,9 +31,9 @@ class RepositoryTools:
 
         return self.executor.execute("list_files", {"path": path}, callback)
 
-    def search_code(self, query: str) -> list[dict]:
+    def search_code(self, query: str, preferred_paths: Sequence[str] | None = None) -> list[dict]:
         def callback() -> ToolExecutionResult:
-            matches = self.search_engine.search(query)
+            matches = self.search_engine.search(query, preferred_paths=preferred_paths)
             payload = [
                 {
                     "file_path": match.file_path,
@@ -44,7 +45,11 @@ class RepositoryTools:
             ]
             return ToolExecutionResult(payload, f"found {len(payload)} lexical matches")
 
-        return self.executor.execute("search_code", {"query": query}, callback)
+        return self.executor.execute(
+            "search_code",
+            {"query": query, "preferred_paths": list(preferred_paths or [])},
+            callback,
+        )
 
     def read_file(self, path: str, start_line: int, end_line: int) -> dict:
         def callback() -> ToolExecutionResult:

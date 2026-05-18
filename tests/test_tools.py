@@ -124,6 +124,43 @@ def test_search_code_prefers_source_over_docs_and_tests(tmp_path, settings):
 
 
 @pytest.mark.django_db
+def test_search_code_prefers_requested_source_root(tmp_path, settings):
+    settings.SAFE_LOCAL_REPO_ROOTS = [tmp_path.resolve()]
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    docs_src_dir = repo_dir / "docs_src"
+    docs_src_dir.mkdir()
+    (docs_src_dir / "tutorial.py").write_text("def solve_dependencies():\n    return 'docs'\n", encoding="utf-8")
+    pkg_dir = repo_dir / "fastapi"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+    (pkg_dir / "dependencies.py").write_text("def solve_dependencies():\n    return 'core'\n", encoding="utf-8")
+
+    repository = Repository.objects.create(
+        source_type=RepositorySourceType.LOCAL,
+        name="fastapi",
+        local_path=str(repo_dir),
+        url="",
+    )
+    session = ResearchSession.objects.create(repository=repository, question="dependency injection")
+    tools = RepositoryTools(
+        context=WorkspaceContext(
+            session_id=session.id,
+            repository_id=repository.id,
+            workspace_path=repo_dir,
+            commit_hash="",
+        ),
+        state=ToolRuntimeState(),
+    )
+
+    matches = tools.search_code("solve_dependencies", preferred_paths=["fastapi"])
+
+    assert matches
+    assert matches[0]["file_path"] == "fastapi/dependencies.py"
+
+
+@pytest.mark.django_db
 def test_duplicate_tool_call_fingerprint_counts_repeated_searches(tmp_path, settings):
     settings.SAFE_LOCAL_REPO_ROOTS = [tmp_path.resolve()]
     repo_dir = tmp_path / "repo"

@@ -29,7 +29,7 @@ class ResearchSessionService:
 
         from tasks.research_tasks import run_research_session_task
 
-        run_research_session_task.delay(session.id)
+        run_research_session_task.apply_async(args=[session.id], expires=600)
         return SessionCreateResult(repository=repository, session=session)
 
     def mark_running(self, session: ResearchSession) -> None:

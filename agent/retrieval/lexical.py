@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Sequence
 
 from django.conf import settings
 
@@ -19,6 +20,26 @@ SKIP_GLOBS = [
     "!venv",
     "!__pycache__",
 ]
+SOURCE_ONLY_GLOBS = [
+    "*.py",
+    "*.pyi",
+    "*.js",
+    "*.ts",
+    "*.tsx",
+    "*.go",
+    "*.rs",
+    "*.java",
+]
+SOURCE_EXCLUDE_GLOBS = [
+    "!docs/**",
+    "!doc/**",
+    "!documentation/**",
+    "!docs_src/**",
+    "!tests/**",
+    "!test/**",
+    "!benchmarks/**",
+    "!README*",
+]
 
 
 class LexicalSearchEngine:
@@ -30,11 +51,50 @@ class LexicalSearchEngine:
         sanitized = SAFE_QUERY_RE.sub(" ", query).strip()
         return re.sub(r"\s+", " ", sanitized)
 
-    def search(self, query: str) -> list[SearchMatch]:
+    def search(self, query: str, preferred_paths: Sequence[str] | None = None) -> list[SearchMatch]:
         sanitized = self.sanitize_query(query)
         if not sanitized:
             return []
 
+        targets = [target for target in (preferred_paths or []) if target] or ["."]
+        if targets != ["."]:
+            preferred_matches = self._run_rg(
+                sanitized,
+                include_globs=SOURCE_ONLY_GLOBS,
+                exclude_globs=SKIP_GLOBS + SOURCE_EXCLUDE_GLOBS,
+                targets=targets,
+                timeout=settings.AGENT_TOOL_TIMEOUT_SECONDS,
+            )
+            if preferred_matches:
+                return preferred_matches
+
+        source_first_matches = self._run_rg(
+            sanitized,
+            include_globs=SOURCE_ONLY_GLOBS,
+            exclude_globs=SKIP_GLOBS + SOURCE_EXCLUDE_GLOBS,
+            targets=["."],
+            timeout=settings.AGENT_TOOL_TIMEOUT_SECONDS,
+        )
+        if source_first_matches:
+            return source_first_matches
+
+        return self._run_rg(
+            sanitized,
+            include_globs=[],
+            exclude_globs=SKIP_GLOBS,
+            targets=targets,
+            timeout=max(3, settings.AGENT_TOOL_TIMEOUT_SECONDS // 2),
+        )
+
+    def _run_rg(
+        self,
+        query: str,
+        *,
+        include_globs: list[str],
+        exclude_globs: list[str],
+        targets: Sequence[str],
+        timeout: int,
+    ) -> list[SearchMatch]:
         command = [
             "rg",
             "--line-number",
@@ -42,22 +102,31 @@ class LexicalSearchEngine:
             "2",
             "--smart-case",
             "--no-messages",
+            "--fixed-strings",
+            "--max-filesize",
+            "1M",
             "--max-count",
             str(settings.AGENT_SEARCH_MAX_RESULTS),
         ]
-        for glob in SKIP_GLOBS:
+        for glob in include_globs:
             command.extend(["--glob", glob])
-        command.extend([sanitized, "."])
-        completed = subprocess.run(
-            command,
-            cwd=self.workspace_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=settings.AGENT_TOOL_TIMEOUT_SECONDS,
-            check=False,
-        )
+        for glob in exclude_globs:
+            command.extend(["--glob", glob])
+        command.append(query)
+        command.extend(targets)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.workspace_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return []
         if completed.returncode not in (0, 1):
             raise RuntimeError(completed.stderr.strip() or "rg search failed")
         return self._parse_output(completed.stdout)

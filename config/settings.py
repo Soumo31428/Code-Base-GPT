@@ -2,8 +2,11 @@ from pathlib import Path
 import os
 import sys
 
+from dotenv import load_dotenv
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
@@ -96,6 +99,11 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 1800
 CELERY_TASK_SOFT_TIME_LIMIT = 1500
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
+CELERY_TASK_EAGER_PROPAGATES = os.getenv("CELERY_TASK_EAGER_PROPAGATES", "false").lower() == "true"
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
@@ -112,3 +120,6 @@ AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "24"))
 AGENT_TOOL_TIMEOUT_SECONDS = int(os.getenv("AGENT_TOOL_TIMEOUT_SECONDS", "8"))
 AGENT_SEARCH_MAX_RESULTS = int(os.getenv("AGENT_SEARCH_MAX_RESULTS", "25"))
 AGENT_READ_MAX_LINES = int(os.getenv("AGENT_READ_MAX_LINES", "150"))
+AGENT_REPO_LOCK_TIMEOUT_SECONDS = int(os.getenv("AGENT_REPO_LOCK_TIMEOUT_SECONDS", "20"))
+AGENT_REPO_STALE_LOCK_SECONDS = int(os.getenv("AGENT_REPO_STALE_LOCK_SECONDS", "60"))
+AGENT_GIT_CLONE_TIMEOUT_SECONDS = int(os.getenv("AGENT_GIT_CLONE_TIMEOUT_SECONDS", "300"))

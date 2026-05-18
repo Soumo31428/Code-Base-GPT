@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from django.conf import settings
 
@@ -74,7 +75,8 @@ class ResearchOrchestrator:
 
         previous_findings = tools.get_previous_findings(limit=10)
         self._ensure_repo_summary(prepared, session)
-        iterations_used = self._explore(session, tools, previous_findings)
+        source_roots = self._infer_source_roots(prepared.workspace_path, session.repository.name)
+        iterations_used = self._explore(session, tools, previous_findings, source_roots)
 
         findings = list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start"))
         answer, total_tokens = self.synthesizer.synthesize(question=session.question, findings=findings)
@@ -85,14 +87,20 @@ class ResearchOrchestrator:
             question=session.question,
         )
         if not verification.is_valid:
-            self._gap_exploration(verification.gaps, tools)
+            self._gap_exploration(verification.gaps, tools, source_roots)
             iterations_used += 1
             findings = list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start"))
             answer, total_tokens = self.synthesizer.synthesize(question=session.question, findings=findings)
 
         return OrchestratorResult(answer=answer, total_tokens=total_tokens, iterations_used=iterations_used)
 
-    def _explore(self, session: ResearchSession, tools: RepositoryTools, previous_findings: list[dict]) -> int:
+    def _explore(
+        self,
+        session: ResearchSession,
+        tools: RepositoryTools,
+        previous_findings: list[dict],
+        source_roots: list[str],
+    ) -> int:
         search_queries = self._build_queries(session.question, previous_findings)
         iterations = 0
         collected_confidence = 0.0
@@ -101,7 +109,7 @@ class ResearchOrchestrator:
             if iterations >= settings.AGENT_MAX_ITERATIONS or tools.state.tool_calls_used >= settings.AGENT_MAX_TOOL_CALLS:
                 break
 
-            matches = tools.search_code(query)
+            matches = tools.search_code(query, preferred_paths=source_roots)
             iterations += 1
             if not matches:
                 continue
@@ -126,10 +134,10 @@ class ResearchOrchestrator:
 
         return iterations
 
-    def _gap_exploration(self, gaps: list[str], tools: RepositoryTools) -> None:
+    def _gap_exploration(self, gaps: list[str], tools: RepositoryTools, source_roots: list[str]) -> None:
         for gap in gaps[:2]:
             for query in self._build_queries(gap, []):
-                matches = tools.search_code(query)
+                matches = tools.search_code(query, preferred_paths=source_roots)
                 if not matches:
                     continue
                 first = matches[0]
@@ -154,6 +162,29 @@ class ResearchOrchestrator:
             source_hash=prepared.commit_hash or prepared.repository.identity_hash,
             defaults={"session": session, "content": summary},
         )
+
+    @staticmethod
+    def _infer_source_roots(workspace_path: Path, repository_name: str) -> list[str]:
+        normalized_name = repository_name.replace("-", "_")
+        candidates = [
+            repository_name,
+            normalized_name,
+            "src",
+            "app",
+            "lib",
+        ]
+        roots: list[str] = []
+        for candidate in candidates:
+            candidate_path = workspace_path / candidate
+            if candidate_path.is_dir() and candidate not in roots:
+                roots.append(candidate)
+
+        for child in sorted(workspace_path.iterdir(), key=lambda item: item.name):
+            if child.is_dir() and not child.name.startswith(".") and (child / "__init__.py").exists():
+                if child.name not in roots:
+                    roots.append(child.name)
+
+        return roots[:4]
 
     @staticmethod
     def _build_queries(question: str, previous_findings: list[dict]) -> list[str]:
