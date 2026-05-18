@@ -2,6 +2,8 @@
 
 Production-minded Django monolith for answering technical questions about code repositories with grounded evidence. It supports public GitHub repositories and safe local repository paths, normalizes both into a local workspace, explores the codebase with explicit tools, persists findings in PostgreSQL, and runs long research sessions in Celery.
 
+https://github.com/user-attachments/assets/0873bdb2-5694-4197-8df6-09b82a6d55ed
+
 ## Architecture
 
 - Django + DRF provide a simple API and admin surface without spreading logic across services.
