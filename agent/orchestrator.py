@@ -78,18 +78,18 @@ class ResearchOrchestrator:
         source_roots = self._infer_source_roots(prepared.workspace_path, session.repository.name)
         iterations_used = self._explore(session, tools, previous_findings, source_roots)
 
-        findings = list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start"))
+        findings = self._get_synthesis_findings(session)
         answer, total_tokens = self.synthesizer.synthesize(question=session.question, findings=findings)
         verification = self.verifier.verify(
             answer=answer,
-            findings=findings,
+            findings=list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start")),
             workspace_path=prepared.workspace_path,
             question=session.question,
         )
         if not verification.is_valid:
             self._gap_exploration(verification.gaps, tools, source_roots)
             iterations_used += 1
-            findings = list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start"))
+            findings = self._get_synthesis_findings(session)
             answer, total_tokens = self.synthesizer.synthesize(question=session.question, findings=findings)
 
         return OrchestratorResult(answer=answer, total_tokens=total_tokens, iterations_used=iterations_used)
@@ -114,9 +114,14 @@ class ResearchOrchestrator:
             if not matches:
                 continue
 
-            for match in matches[:3]:
+            relevant_matches = self._select_relevant_matches(matches, query)
+            for match in relevant_matches[:3]:
                 line_number = match["line_number"]
-                read_result = tools.read_file(match["file_path"], max(1, line_number - 5), line_number + 15)
+                read_result = tools.read_file(
+                    match["file_path"],
+                    max(1, line_number - 2),
+                    line_number + self._target_read_window(query, match),
+                )
                 note = self._derive_note(query, match, read_result["content"])
                 confidence = self._derive_confidence(match["relevance_hint"], tools.state.tool_calls_used)
                 tools.save_finding(
@@ -162,6 +167,22 @@ class ResearchOrchestrator:
             source_hash=prepared.commit_hash or prepared.repository.identity_hash,
             defaults={"session": session, "content": summary},
         )
+
+    @staticmethod
+    def _get_synthesis_findings(session: ResearchSession) -> list[Finding]:
+        findings = list(Finding.objects.filter(session=session).order_by("-confidence", "file_path", "line_start"))
+        preferred: list[Finding] = []
+        for finding in findings:
+            if finding.evidence_type != EvidenceType.DIRECT:
+                continue
+            lowered_path = finding.file_path.lower()
+            lowered_note = finding.note.lower()
+            if "gap follow-up:" in lowered_note:
+                continue
+            if any(marker in lowered_path for marker in ("docs/", "docs_src/", "tests/", "benchmarks/", "readme")):
+                continue
+            preferred.append(finding)
+        return preferred[:10] or findings[:10]
 
     @staticmethod
     def _infer_source_roots(workspace_path: Path, repository_name: str) -> list[str]:
@@ -221,7 +242,17 @@ class ResearchOrchestrator:
         lowered = question.lower()
         phrases: list[str] = []
         if "dependency injection" in lowered:
-            phrases.extend(["dependency injection", "Depends", "solve_dependencies"])
+            phrases.extend(
+                [
+                    "solve_dependencies",
+                    "get_dependant",
+                    "analyze_param",
+                    "Depends",
+                    "dependency_cache",
+                    "dependency_overrides",
+                    "dependency injection",
+                ]
+            )
         if "retry" in lowered:
             phrases.extend(["retry", "autoretry_for", "retry_backoff", "default_retry_delay"])
         if "backoff" in lowered:
@@ -233,7 +264,16 @@ class ResearchOrchestrator:
         lowered = question.lower()
         variants: list[str] = []
         if "dependency" in lowered:
-            variants.extend(["dependency", "dependencies", "Depends"])
+            variants.extend(
+                [
+                    "dependency",
+                    "dependencies",
+                    "Depends",
+                    "get_dependant",
+                    "solve_dependencies",
+                    "analyze_param",
+                ]
+            )
         if "inject" in lowered:
             variants.extend(["inject", "injection"])
         if "retry" in lowered:
@@ -241,9 +281,58 @@ class ResearchOrchestrator:
         return variants
 
     @staticmethod
+    def _select_relevant_matches(matches: list[dict], query: str) -> list[dict]:
+        lowered_query = query.lower()
+
+        def score(match: dict) -> tuple[int, int, int]:
+            path = match["file_path"].lower()
+            snippet = match["snippet"].lower()
+            value = 0
+            if any(symbol in lowered_query for symbol in ("solve_dependencies", "get_dependant", "analyze_param")):
+                if any(symbol in snippet for symbol in ("def solve_dependencies", "def get_dependant", "def analyze_param")):
+                    value += 10
+            if lowered_query == "depends" and "class depends" in snippet:
+                value += 9
+            if "fastapi/dependencies/" in path:
+                value += 6
+            if path.endswith("fastapi/params.py"):
+                value += 5
+            if path.endswith("fastapi/routing.py"):
+                value += 4
+            if any(marker in path for marker in ("docs/", "docs_src/", "tests/", "benchmarks/")):
+                value -= 8
+            if match["relevance_hint"] == "symbol":
+                value += 3
+            return (value, -match["line_number"], len(path) * -1)
+
+        return sorted(matches, key=score, reverse=True)
+
+    @staticmethod
+    def _target_read_window(query: str, match: dict) -> int:
+        lowered_query = query.lower()
+        snippet = match["snippet"].lower()
+        if any(symbol in lowered_query for symbol in ("solve_dependencies", "get_dependant", "analyze_param")):
+            return 45
+        if lowered_query == "depends" and "class depends" in snippet:
+            return 30
+        return 18
+
+    @staticmethod
     def _derive_note(query: str, match: dict, content: str) -> str:
         content_lines = [line.strip() for line in content.splitlines() if line.strip()]
-        representative_line = content_lines[0] if content_lines else match["snippet"].strip()
+        representative_line = match["snippet"].strip()
+        if any(symbol in query.lower() for symbol in ("solve_dependencies", "get_dependant", "analyze_param", "depends")):
+            for line in content_lines:
+                lowered = line.lower()
+                if (
+                    query.lower() in lowered
+                    or f"def {query.lower()}" in lowered
+                    or f"class {query.lower()}" in lowered
+                ):
+                    representative_line = line
+                    break
+        elif content_lines:
+            representative_line = content_lines[0]
         representative_line = representative_line[:220]
         return (
             f"Query '{query}' matched {match['relevance_hint']} code in {match['file_path']}; "

@@ -26,6 +26,9 @@ class AnswerSynthesizer:
         )
         response = await self.client.responses.create(
             model=settings.OPENAI_MODEL,
+            # reasoning={"effort": "minimal"},
+            # text={"verbosity": "low"},
+            max_output_tokens=300,
             input=[
                 {
                     "role": "system",
